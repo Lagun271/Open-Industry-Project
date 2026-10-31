@@ -63,6 +63,8 @@ var _next_spawn_time: float = 0.0
 var _spawn_counter: int = 0
 var _first_spawn_done: bool = false
 var _infeed_blocked: bool = false
+var _spawn_shape := BoxShape3D.new()
+var _spawn_query := PhysicsShapeQueryParameters3D.new()
 
 @onready var _preview_mesh: MeshInstance3D = $MeshInstance3D
 @onready var disabled_box_texture: MeshInstance3D = $MeshInstance3D2
@@ -113,8 +115,11 @@ func _physics_process(delta: float) -> void:
 
 	if fixed_rate:
 		var time_between: float = 60.0 / float(boxes_per_minute)
-		if _scan_interval >= time_between and _spawn_box():
-			_scan_interval -= time_between
+		if _scan_interval >= time_between:
+			if _spawn_box():
+				_scan_interval -= time_between
+			else:
+				_scan_interval = time_between  # owe one spawn, not a backlog that bursts out later
 	else:
 		if _scan_interval >= _next_spawn_time and _spawn_box():
 			_spawn_counter += 1
@@ -165,14 +170,13 @@ func _spawn_volume_clear(box_size: Vector3) -> bool:
 	var world := get_world_3d()
 	if not world:
 		return true
-	var shape := BoxShape3D.new()
-	shape.size = box_size
-	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = shape
-	# Same placement _spawn_box gives the box: Box is top_level, so these are world coordinates.
-	query.transform = Transform3D(Basis.from_euler(rotation), position)
-	query.collision_mask = 10  # Box.tscn's collision_layer
-	for hit: Dictionary in world.direct_space_state.intersect_shape(query, 8):
+	_spawn_shape.size = box_size
+	_spawn_query.shape = _spawn_shape
+	# Same placement _spawn_box gives the box: Box is top_level, so these are world coordinates
+	# (like the spawn itself, correct while the spawner's parent sits at the origin).
+	_spawn_query.transform = Transform3D(Basis.from_euler(rotation), position)
+	# All layers, then keep only rigid bodies: boxes are the only ones; belt and blade are static.
+	for hit: Dictionary in world.direct_space_state.intersect_shape(_spawn_query, 32):
 		if hit.get("collider") is RigidBody3D:
 			return false
 	return true
