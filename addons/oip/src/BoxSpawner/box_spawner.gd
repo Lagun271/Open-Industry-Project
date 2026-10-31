@@ -62,6 +62,7 @@ var _conveyor_stopped: bool = false
 var _next_spawn_time: float = 0.0
 var _spawn_counter: int = 0
 var _first_spawn_done: bool = false
+var _infeed_blocked: bool = false
 
 @onready var _preview_mesh: MeshInstance3D = $MeshInstance3D
 @onready var disabled_box_texture: MeshInstance3D = $MeshInstance3D2
@@ -102,36 +103,46 @@ func _physics_process(delta: float) -> void:
 	
 	_scan_interval += delta
 
+	# A spawn that finds its volume occupied is not skipped but retried every tick, so the
+	# box appears as soon as the infeed clears — the schedule only advances on success.
 	if not _first_spawn_done:
-		_spawn_box()
-		_first_spawn_done = true
-		_spawn_counter += 1
-		_scan_interval = 0.0
+		if _spawn_box():
+			_first_spawn_done = true
+			_spawn_counter += 1
+			_scan_interval = 0.0
 
 	if fixed_rate:
 		var time_between: float = 60.0 / float(boxes_per_minute)
-		if _scan_interval >= time_between:
-			_spawn_box()
+		if _scan_interval >= time_between and _spawn_box():
 			_scan_interval -= time_between
 	else:
-		if _scan_interval >= _next_spawn_time:
-			_spawn_box()
+		if _scan_interval >= _next_spawn_time and _spawn_box():
 			_spawn_counter += 1
 			if _spawn_counter >= boxes_per_minute:
 				_reset_spawn_cycle()
 			else:
 				_next_spawn_time = _scan_interval + (60.0 / boxes_per_minute) * randf_range(0.5, 1.5)
 
-func _spawn_box() -> void:
-	var box := scene.instantiate() as Box
-
+## Spawns one box; returns false, spawning nothing, while another body occupies the spawn volume.
+func _spawn_box() -> bool:
+	var box_size: Vector3 = size
 	if random_size:
 		var x := randf_range(random_size_min.x, random_size_max.x)
 		var y := randf_range(random_size_min.y, random_size_max.y)
 		var z := randf_range(random_size_min.z, random_size_max.z)
-		box.size = Vector3(x, y, z)
-	else:
-		box.size = size
+		box_size = Vector3(x, y, z)
+
+	if not _spawn_volume_clear(box_size):
+		if not _infeed_blocked:
+			_infeed_blocked = true
+			print("BoxSpawner: infeed blocked — spawn volume occupied, waiting")
+		return false
+	if _infeed_blocked:
+		_infeed_blocked = false
+		print("BoxSpawner: infeed clear")
+
+	var box := scene.instantiate() as Box
+	box.size = box_size
 
 	if random_mass:
 		box.mass = randf_range(random_mass_min, random_mass_max)
@@ -145,6 +156,26 @@ func _spawn_box() -> void:
 	box.instanced = true
 	add_child(box, true)
 	box.owner = get_tree().edited_scene_root
+	return true
+
+## True when no box (RigidBody3D on the box layers) overlaps the volume a new box would occupy.
+## A real infeed cannot place a box where one already is; without this check a backed-up
+## line gets boxes spawned inside each other, which the physics then throws around.
+func _spawn_volume_clear(box_size: Vector3) -> bool:
+	var world := get_world_3d()
+	if not world:
+		return true
+	var shape := BoxShape3D.new()
+	shape.size = box_size
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	# Same placement _spawn_box gives the box: Box is top_level, so these are world coordinates.
+	query.transform = Transform3D(Basis.from_euler(rotation), position)
+	query.collision_mask = 10  # Box.tscn's collision_layer
+	for hit: Dictionary in world.direct_space_state.intersect_shape(query, 8):
+		if hit.get("collider") is RigidBody3D:
+			return false
+	return true
 
 func _reset_spawn_cycle() -> void:
 	_scan_interval = 0.0
