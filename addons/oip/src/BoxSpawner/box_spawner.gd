@@ -63,8 +63,6 @@ var _next_spawn_time: float = 0.0
 var _spawn_counter: int = 0
 var _first_spawn_done: bool = false
 var _infeed_blocked: bool = false
-var _spawn_shape := BoxShape3D.new()
-var _spawn_query := PhysicsShapeQueryParameters3D.new()
 
 @onready var _preview_mesh: MeshInstance3D = $MeshInstance3D
 @onready var disabled_box_texture: MeshInstance3D = $MeshInstance3D2
@@ -163,21 +161,29 @@ func _spawn_box() -> bool:
 	box.owner = get_tree().edited_scene_root
 	return true
 
-## True when no box (RigidBody3D on the box layers) overlaps the volume a new box would occupy.
-## A real infeed cannot place a box where one already is; without this check a backed-up
-## line gets boxes spawned inside each other, which the physics then throws around.
+## True when no existing box overlaps the volume a new box would occupy. A real infeed cannot
+## place a box where one already is; without this check a backed-up line gets boxes spawned
+## inside each other, which the physics then throws around.
+## An axis-aligned test against the live boxes rather than a physics query: a box spawned
+## this frame is already in the group but not yet in the physics space, so several spawn
+## commands in one frame would all pass a space query.
 func _spawn_volume_clear(box_size: Vector3) -> bool:
-	var world := get_world_3d()
-	if not world:
+	if not is_inside_tree():
 		return true
-	_spawn_shape.size = box_size
-	_spawn_query.shape = _spawn_shape
-	# Same placement _spawn_box gives the box: Box is top_level, so these are world coordinates
-	# (like the spawn itself, correct while the spawner's parent sits at the origin).
-	_spawn_query.transform = Transform3D(Basis.from_euler(rotation), position)
-	# All layers, then keep only rigid bodies: boxes are the only ones; belt and blade are static.
-	for hit: Dictionary in world.direct_space_state.intersect_shape(_spawn_query, 32):
-		if hit.get("collider") is RigidBody3D:
+	# Same placement _spawn_box gives the box: Box is top_level, so `position` is where it
+	# lands in world space (correct while the spawner's parent sits at the origin).
+	var at: Vector3 = position
+	var half := box_size * 0.5
+	for other: Node in get_tree().get_nodes_in_group("oip_boxes"):
+		if not is_instance_valid(other) or not other is Node3D:
+			continue
+		var body: Node3D = other.get_node_or_null("RigidBody3D")
+		var node: Node3D = body if body else other
+		var other_size: Variant = other.get("size")
+		var other_half: Vector3 = (other_size if other_size is Vector3 else box_size) * 0.5
+		var d := (node.global_position - at).abs()
+		var limit := half + other_half
+		if d.x < limit.x and d.y < limit.y and d.z < limit.z:
 			return false
 	return true
 
