@@ -63,6 +63,8 @@ var _next_spawn_time: float = 0.0
 var _spawn_counter: int = 0
 var _first_spawn_done: bool = false
 var _infeed_blocked: bool = false
+## Free space required around a new box, in metres, before the spawner places it.
+const SPAWN_CLEARANCE: float = 0.3
 
 @onready var _preview_mesh: MeshInstance3D = $MeshInstance3D
 @onready var disabled_box_texture: MeshInstance3D = $MeshInstance3D2
@@ -136,9 +138,7 @@ func _spawn_box() -> bool:
 		box_size = Vector3(x, y, z)
 
 	if not _spawn_volume_clear(box_size):
-		if not _infeed_blocked:
-			_infeed_blocked = true
-			print("BoxSpawner: infeed blocked — spawn volume occupied, waiting")
+		_infeed_blocked = true
 		return false
 	if _infeed_blocked:
 		_infeed_blocked = false
@@ -173,7 +173,9 @@ func _spawn_volume_clear(box_size: Vector3) -> bool:
 	# Same placement _spawn_box gives the box: Box is top_level, so `position` is where it
 	# lands in world space (correct while the spawner's parent sits at the origin).
 	var at: Vector3 = position
-	var half := box_size * 0.5
+	# Clearance beyond mere non-overlap: a box spawned touching the queue's tail hits it at
+	# belt speed the moment it moves; an infeed releases a box only when there is room.
+	var half := box_size * 0.5 + Vector3.ONE * SPAWN_CLEARANCE
 	for other: Node in get_tree().get_nodes_in_group("oip_boxes"):
 		if not is_instance_valid(other) or not other is Node3D:
 			continue
@@ -184,6 +186,8 @@ func _spawn_volume_clear(box_size: Vector3) -> bool:
 		var d := (node.global_position - at).abs()
 		var limit := half + other_half
 		if d.x < limit.x and d.y < limit.y and d.z < limit.z:
+			if not _infeed_blocked:
+				print("BoxSpawner: infeed blocked — box at %s within the spawn clearance, waiting" % node.global_position)
 			return false
 	return true
 
